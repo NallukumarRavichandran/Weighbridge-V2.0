@@ -1,0 +1,18 @@
+# Operating System files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
+
+# Temporary camera captures
+captures/*.jpg
+captures/*.jpeg
+captures/*.png
+!captures/.gitkeep
+
+# Temporary editor / script files
+*.tmp
+*.log
+.vscode/
+.idea/
