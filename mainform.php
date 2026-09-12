@@ -856,18 +856,23 @@ function startLiveCameraStreaming() {
     }
     startAnprAutoScanner();
 
-    // 🛡️ STREAM HEALTH WATCHDOG:
-    // Periodically re-syncs the socket every 25 seconds to guarantee 24/7 uninterrupted 25-30 FPS live video with ZERO freezing!
+    // 🛡️ PASSIVE STREAM HEALTH WATCHDOG (100% FLICKER-FREE):
+    // Checks every 10s and only reconnects if a stream actually dropped or errored. Active streams are never interrupted!
     streamWatchdogTimer = setInterval(() => {
         if (localStorage.getItem("weighbridge_cam_active") === "true") {
             for (let c = 1; c <= 4; c++) {
                 const imgEl = document.getElementById("cam_live_" + c);
+                const statusEl = document.getElementById("cam_status_" + c);
                 if (imgEl && typeof imgEl.reconnectStream === "function") {
-                    imgEl.reconnectStream();
+                    const isErrorOrHidden = imgEl.style.display === "none";
+                    const isStatusReconnecting = statusEl && statusEl.style.display !== "none" && statusEl.innerText.includes("RECONNECT");
+                    if (isErrorOrHidden || isStatusReconnecting) {
+                        imgEl.reconnectStream();
+                    }
                 }
             }
         }
-    }, 25 * 1000); // 25 seconds
+    }, 10 * 1000);
 }
 
 let anprScannerTimer = null;
