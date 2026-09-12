@@ -63,7 +63,7 @@ try {
             }
         }
 
-        // Direct Native HTTP/MJPEG Capture (< 1 second, pure uncorrupted JPEG frame)
+        // Direct Native HTTP/MJPEG Capture: Prioritizes Mainstream Maximum Resolution (1080P)
         if (!$hasImage) {
             if (!preg_match('#^https?://#i', $camUrl)) {
                 $camUrl = 'http://' . $camUrl;
@@ -71,31 +71,17 @@ try {
 
             $isMjpeg = (stripos($camUrl, 'mjpg') !== false || stripos($camUrl, 'video.cgi') !== false);
             if ($isMjpeg) {
-                $buffer = '';
-                $ch = curl_init($camUrl);
-                curl_setopt($ch, CURLOPT_HTTPAUTH, CURLAUTH_DIGEST | CURLAUTH_BASIC);
-                curl_setopt($ch, CURLOPT_USERPWD, "$camUser:$camPass");
-                curl_setopt($ch, CURLOPT_TIMEOUT, 3);
-                curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 2);
-                curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-                curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
-                curl_setopt($ch, CURLOPT_WRITEFUNCTION, function($c, $chunk) use (&$buffer) {
-                    $buffer .= $chunk;
-                    $start = strpos($buffer, "\xFF\xD8");
-                    if ($start !== false) {
-                        $end = strpos($buffer, "\xFF\xD9", $start + 2);
-                        if ($end !== false) return 0;
-                    }
-                    return strlen($chunk);
-                });
-                curl_exec($ch);
-                curl_close($ch);
+                // Priority 1: Request Mainstream Maximum Resolution (subtype=0)
+                $mainUrl = preg_replace('/([?&]subtype=)1/i', '${1}0', $camUrl);
+                $frameData = fetchMjpegFrame($mainUrl, $camUser, $camPass, 3);
 
-                $start = strpos($buffer, "\xFF\xD8");
-                $end   = ($start !== false) ? strpos($buffer, "\xFF\xD9", $start + 2) : false;
-                if ($start !== false && $end !== false) {
-                    $jpeg = substr($buffer, $start, $end - $start + 2);
-                    file_put_contents($tempFile, $jpeg);
+                // Priority 2: Fallback to original URL if mainstream is unavailable or throttled
+                if (!$frameData && $mainUrl !== $camUrl) {
+                    $frameData = fetchMjpegFrame($camUrl, $camUser, $camPass, 3);
+                }
+
+                if ($frameData && strlen($frameData) > 500) {
+                    file_put_contents($tempFile, $frameData);
                     $hasImage = true;
                 }
             } else {
@@ -103,7 +89,7 @@ try {
                 curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
                 curl_setopt($ch, CURLOPT_HTTPAUTH, CURLAUTH_DIGEST | CURLAUTH_BASIC);
                 curl_setopt($ch, CURLOPT_USERPWD, "$camUser:$camPass");
-                curl_setopt($ch, CURLOPT_TIMEOUT, 3);
+                curl_setopt($ch, CURLOPT_TIMEOUT, 4);
                 curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 2);
                 curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
                 curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
@@ -111,7 +97,7 @@ try {
                 $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
                 curl_close($ch);
 
-                if ($img && $httpCode >= 200 && $httpCode < 300) {
+                if ($img && $httpCode >= 200 && $httpCode < 300 && strlen($img) > 500) {
                     file_put_contents($tempFile, $img);
                     $hasImage = true;
                 }
@@ -253,5 +239,44 @@ function extractVehicleNumber($fullText, $lines = []) {
     }
 
     return null;
+}
+
+/**
+ * Fetch a complete, uncorrupted JPEG frame from an MJPEG multipart HTTP stream.
+ * Prevents premature truncation by waiting for the boundary header (--...) or next frame marker.
+ */
+function fetchMjpegFrame($url, $user, $pass, $timeout = 4) {
+    $buffer = '';
+    $ch = curl_init($url);
+    curl_setopt($ch, CURLOPT_HTTPAUTH, CURLAUTH_DIGEST | CURLAUTH_BASIC);
+    curl_setopt($ch, CURLOPT_USERPWD, "$user:$pass");
+    curl_setopt($ch, CURLOPT_TIMEOUT, $timeout);
+    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 2);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
+    curl_setopt($ch, CURLOPT_WRITEFUNCTION, function($c, $chunk) use (&$buffer) {
+        $buffer .= $chunk;
+        $start = strpos($buffer, "\xFF\xD8");
+        if ($start !== false) {
+            // Check for multipart boundary (--...) or next frame start (\xFF\xD8) after initial image header
+            $nextBoundary = strpos($buffer, "--", $start + 1024);
+            $nextFrame    = strpos($buffer, "\xFF\xD8", $start + 1024);
+            if ($nextBoundary !== false || $nextFrame !== false) {
+                return 0; // Abort cleanly once the full frame has arrived
+            }
+        }
+        return strlen($chunk);
+    });
+    curl_exec($ch);
+    curl_close($ch);
+
+    $start = strpos($buffer, "\xFF\xD8");
+    if ($start !== false) {
+        $end = strrpos($buffer, "\xFF\xD9");
+        if ($end !== false && $end > $start) {
+            return substr($buffer, $start, $end - $start + 2);
+        }
+    }
+    return false;
 }
 
