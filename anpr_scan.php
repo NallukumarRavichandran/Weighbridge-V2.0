@@ -15,6 +15,13 @@ if (!is_dir($tempDir)) {
     @mkdir($tempDir, 0777, true);
 }
 
+// Clean up any stale temporary files older than 60 seconds
+foreach (glob($tempDir . '/anpr_temp_*.jpg') as $oldFile) {
+    if (filemtime($oldFile) < time() - 60) {
+        @unlink($oldFile);
+    }
+}
+
 $tempFile = $tempDir . '/anpr_temp_' . time() . '_' . rand(1000, 9999) . '.jpg';
 
 try {
@@ -63,7 +70,7 @@ try {
             }
         }
 
-        // Direct Native HTTP/MJPEG Capture: Prioritizes Mainstream Maximum Resolution (1080P)
+        // Direct Native HTTP/MJPEG Capture (Strictly Non-Blocking with Fast 2-Second Timeout)
         if (!$hasImage) {
             if (!preg_match('#^https?://#i', $camUrl)) {
                 $camUrl = 'http://' . $camUrl;
@@ -71,15 +78,7 @@ try {
 
             $isMjpeg = (stripos($camUrl, 'mjpg') !== false || stripos($camUrl, 'video.cgi') !== false);
             if ($isMjpeg) {
-                // Priority 1: Request Mainstream Maximum Resolution (subtype=0)
-                $mainUrl = preg_replace('/([?&]subtype=)1/i', '${1}0', $camUrl);
-                $frameData = fetchMjpegFrame($mainUrl, $camUser, $camPass, 3);
-
-                // Priority 2: Fallback to original URL if mainstream is unavailable or throttled
-                if (!$frameData && $mainUrl !== $camUrl) {
-                    $frameData = fetchMjpegFrame($camUrl, $camUser, $camPass, 3);
-                }
-
+                $frameData = fetchMjpegFrame($camUrl, $camUser, $camPass, 2);
                 if ($frameData && strlen($frameData) > 500) {
                     file_put_contents($tempFile, $frameData);
                     $hasImage = true;
@@ -89,8 +88,8 @@ try {
                 curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
                 curl_setopt($ch, CURLOPT_HTTPAUTH, CURLAUTH_DIGEST | CURLAUTH_BASIC);
                 curl_setopt($ch, CURLOPT_USERPWD, "$camUser:$camPass");
-                curl_setopt($ch, CURLOPT_TIMEOUT, 4);
-                curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 2);
+                curl_setopt($ch, CURLOPT_TIMEOUT, 2);
+                curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 1);
                 curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
                 curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
                 $img = curl_exec($ch);
@@ -245,13 +244,13 @@ function extractVehicleNumber($fullText, $lines = []) {
  * Fetch a complete, uncorrupted JPEG frame from an MJPEG multipart HTTP stream.
  * Prevents premature truncation by waiting for the boundary header (--...) or next frame marker.
  */
-function fetchMjpegFrame($url, $user, $pass, $timeout = 4) {
+function fetchMjpegFrame($url, $user, $pass, $timeout = 2) {
     $buffer = '';
     $ch = curl_init($url);
     curl_setopt($ch, CURLOPT_HTTPAUTH, CURLAUTH_DIGEST | CURLAUTH_BASIC);
     curl_setopt($ch, CURLOPT_USERPWD, "$user:$pass");
     curl_setopt($ch, CURLOPT_TIMEOUT, $timeout);
-    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 2);
+    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 1);
     curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
     curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
     curl_setopt($ch, CURLOPT_WRITEFUNCTION, function($c, $chunk) use (&$buffer) {

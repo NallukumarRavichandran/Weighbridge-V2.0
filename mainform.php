@@ -927,99 +927,83 @@ function scanCamerasForPlate(camsList, index) {
     }
 
     const camObj = camsList[index];
-    const camData = camObj.data;
     const camNum = camObj.num;
 
-    let camUser = (camData.user || "admin").trim();
-    if (camUser.toLowerCase() === "admin") camUser = "admin";
+    // Grab frame directly from active live camera element (0ms socket contention, prevents camera & weight cross-freezing)
+    const imgEl = document.getElementById("cam_live_" + camNum);
+    if (!imgEl || (!imgEl.naturalWidth && !imgEl.clientWidth)) {
+        scanCamerasForPlate(camsList, index + 1);
+        return;
+    }
 
-    // Priority: Request Native Maximum Resolution Mainstream directly from camera hardware
-    const scanUrl = "anpr_scan.php?url=" + encodeURIComponent(camData.url.trim()) + 
-                    "&user=" + encodeURIComponent(camUser) + 
-                    "&pass=" + encodeURIComponent(camData.pass || "");
+    let dataUrl = null;
+    try {
+        const canvas = document.createElement("canvas");
+        canvas.width = imgEl.naturalWidth || imgEl.clientWidth || 704;
+        canvas.height = imgEl.naturalHeight || imgEl.clientHeight || 576;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(imgEl, 0, 0, canvas.width, canvas.height);
+        dataUrl = canvas.toDataURL("image/jpeg", 0.95);
+    } catch (cvErr) {
+        console.warn("Camera " + camNum + " canvas capture note:", cvErr);
+    }
 
-    fetch(scanUrl, { method: "GET" })
-        .then(res => res.json())
-        .then(data => {
-            if (data && data.status === "success" && data.plate) {
-                anprScanning = false;
-                const detected = data.plate.trim().toUpperCase();
+    if (!dataUrl || dataUrl.length < 500) {
+        scanCamerasForPlate(camsList, index + 1);
+        return;
+    }
 
-                // If user started typing while scan was in-flight, do not overwrite
-                if (vInput.value.trim() !== "" || document.activeElement === vInput) return;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 4000);
 
-                // Instant direct single-hit auto-fill
-                vInput.value = detected;
+    fetch("anpr_scan.php", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ image: dataUrl }),
+        signal: controller.signal
+    })
+    .then(res => res.json())
+    .then(data => {
+        clearTimeout(timeoutId);
+        if (data && data.status === "success" && data.plate) {
+            anprScanning = false;
+            const detected = data.plate.trim().toUpperCase();
 
-                // Visual confirmation badge specifying which camera detected the plate
-                const badge = document.getElementById("anpr_status_badge");
-                if (badge) {
-                    badge.innerText = "✓ ANPR (CAM " + camNum + "): " + detected;
-                    badge.style.display = "inline-block";
-                    badge.style.background = "#dcfce7";
-                    badge.style.color = "#166534";
-                    badge.style.border = "1px solid #86efac";
-                }
+            // If user started typing while scan was in-flight, do not overwrite
+            if (vInput.value.trim() !== "" || document.activeElement === vInput) return;
 
-                // Green glow animation on vehicle input
-                vInput.style.borderColor = "#16a34a";
-                vInput.style.boxShadow = "0 0 8px rgba(22,163,74,0.6)";
-                setTimeout(() => {
-                    vInput.style.borderColor = "";
-                    vInput.style.boxShadow = "";
-                }, 2500);
+            // Instant direct single-hit auto-fill
+            vInput.value = detected;
 
-                // Auto-populate past vehicle data and tare/gross history
-                handleVehicleTyping(detected);
-            } else {
-                // If this camera didn't see a plate, check the next enabled camera in list
-                scanCamerasForPlate(camsList, index + 1);
+            // Visual confirmation badge specifying which camera detected the plate
+            const badge = document.getElementById("anpr_status_badge");
+            if (badge) {
+                badge.innerText = "✓ ANPR (CAM " + camNum + "): " + detected;
+                badge.style.display = "inline-block";
+                badge.style.background = "#dcfce7";
+                badge.style.color = "#166534";
+                badge.style.border = "1px solid #86efac";
             }
-        })
-        .catch(() => {
-            // Fallback: If direct mainstream network fetch had a hiccup, attempt fallback scan via on-screen frame
-            const imgEl = document.getElementById("cam_live_" + camNum);
-            if (imgEl && (imgEl.naturalWidth > 0 || imgEl.clientWidth > 0)) {
-                try {
-                    const canvas = document.createElement("canvas");
-                    canvas.width = imgEl.naturalWidth || imgEl.clientWidth || 704;
-                    canvas.height = imgEl.naturalHeight || imgEl.clientHeight || 576;
-                    const ctx = canvas.getContext("2d");
-                    ctx.drawImage(imgEl, 0, 0, canvas.width, canvas.height);
-                    const dataUrl = canvas.toDataURL("image/jpeg", 0.95);
-                    if (dataUrl && dataUrl.length > 500) {
-                        fetch("anpr_scan.php", {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({ image: dataUrl })
-                        })
-                        .then(r => r.json())
-                        .then(fbData => {
-                            if (fbData && fbData.status === "success" && fbData.plate) {
-                                anprScanning = false;
-                                const fbDetected = fbData.plate.trim().toUpperCase();
-                                if (vInput.value.trim() !== "" || document.activeElement === vInput) return;
-                                vInput.value = fbDetected;
-                                const badge = document.getElementById("anpr_status_badge");
-                                if (badge) {
-                                    badge.innerText = "✓ ANPR (CAM " + camNum + "): " + fbDetected;
-                                    badge.style.display = "inline-block";
-                                    badge.style.background = "#dcfce7";
-                                    badge.style.color = "#166534";
-                                    badge.style.border = "1px solid #86efac";
-                                }
-                                handleVehicleTyping(fbDetected);
-                            } else {
-                                scanCamerasForPlate(camsList, index + 1);
-                            }
-                        })
-                        .catch(() => scanCamerasForPlate(camsList, index + 1));
-                        return;
-                    }
-                } catch (cvErr) {}
-            }
+
+            // Green glow animation on vehicle input
+            vInput.style.borderColor = "#16a34a";
+            vInput.style.boxShadow = "0 0 8px rgba(22,163,74,0.6)";
+            setTimeout(() => {
+                vInput.style.borderColor = "";
+                vInput.style.boxShadow = "";
+            }, 2500);
+
+            // Auto-populate past vehicle data and tare/gross history
+            handleVehicleTyping(detected);
+        } else {
+            // If this camera didn't see a plate, check the next enabled camera in list
             scanCamerasForPlate(camsList, index + 1);
-        });
+        }
+    })
+    .catch(() => {
+        clearTimeout(timeoutId);
+        scanCamerasForPlate(camsList, index + 1);
+    });
 }
 
 function stopLiveCameraStreaming() {
