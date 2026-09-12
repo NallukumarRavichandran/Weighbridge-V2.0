@@ -1,4 +1,4 @@
-<?php
+﻿<?php
 ob_start();  
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
@@ -479,7 +479,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'restore_ui') {
             <?php endforeach; ?>
         <?php endif; ?>
         <br>
-        <a href="mainform.php">⬅ Back</a>
+        <a href="mainform.php">Ô¼à Back</a>
     </div>
     </body>
     </html>
@@ -622,26 +622,6 @@ if ($qDyn) {
     while ($df = $qDyn->fetch_assoc()) {
         $customDynamicFields[] = $df;
     }
-}
-
-/* ---------------- FETCH REPORTABLE DYNAMIC FIELDS ---------------- */
-$report_fields = [];
-$rstmt = $conn->prepare("
-    SELECT id, field_label
-    FROM weighment_fields
-    WHERE company_id = ?
-      AND field_options LIKE '%report%'
-      AND is_active = 1	
-    ORDER BY field_order, id
-");
-if ($rstmt) {
-    $rstmt->bind_param("i", $company_id);
-    $rstmt->execute();
-    $rres = $rstmt->get_result();
-    while ($r = $rres->fetch_assoc()) {
-        $report_fields[] = $r;
-    }
-    $rstmt->close();
 }
 ?>
 <!DOCTYPE html>
@@ -1017,7 +997,7 @@ body {
     <ul>
         <li><a href="mainform.php">Home</a></li>
         <li>
-            <a href="#">Reports ▾</a>
+            <a href="#">Reports Ôû¥</a>
             <div class="dropdown-menu">
                 <a href="pending_report.php">Pending Report</a>
                 <a href="vehiclewise_report.php">Vehicle-wise Report</a>
@@ -1033,43 +1013,43 @@ body {
         </li>
 
         <li>
-            <a href="#">Scale ▾</a>
+            <a href="#">Scale Ôû¥</a>
             <div class="dropdown-menu">
-                <a href="#" onclick="openScaleDialog(); return false;">🔌 Connect Port</a>
-                <a href="#" onclick="autoReconnect(); return false;">🔁 Reconnect</a>
-                <a href="#" onclick="disconnectScale(); return false;">🔴 Disconnect</a>
+                <a href="#" onclick="openScaleDialog(); return false;">­ƒöî Connect Port</a>
+                <a href="#" onclick="autoReconnect(); return false;">­ƒöü Reconnect</a>
+                <a href="#" onclick="disconnectScale(); return false;">­ƒö┤ Disconnect</a>
                 <div style="border-top:1px solid #e5e7eb;margin:6px 0;"></div>
                 <a href="#" style="cursor:default;">Status: <span id="connStatus">DISCONNECTED</span></a>
             </div>
         </li>
 
         <li>
-            <a href="#">Camera ▾</a>
+            <a href="#">Camera Ôû¥</a>
             <div class="dropdown-menu">
                 <a href="#" onclick="toggleGlobalCamera(); return false;">
-                    🔘 Camera: <span id="camGlobalStatusText" style="font-weight:bold;color:#dc2626;">OFF</span>
+                    ­ƒöÿ Camera: <span id="camGlobalStatusText" style="font-weight:bold;color:#dc2626;">OFF</span>
                 </a>
-                <a href="#" onclick="openCameraSettings(); return false;">⚙ Camera Settings</a>
+                <a href="#" onclick="openCameraSettings(); return false;">ÔÜÖ Camera Settings</a>
             </div>
         </li>
 
         <li>
-            <a href="#">Print Layout ▾</a>
+            <a href="#">Print Layout Ôû¥</a>
             <div class="dropdown-menu">
-                <a href="#" onclick="openPrintSettings(); return false;">📄 Select Print Layout</a>
-                <a href="#" onclick="openPrintSettings(); return false;">📋 Field Visibility & Labels</a>
-                <a href="#" onclick="openPrintSettings(); return false;">🖼️ Upload Company Logo</a>
+                <a href="#" onclick="openPrintSettings(); return false;">­ƒôä Select Print Layout</a>
+                <a href="#" onclick="openPrintSettings(); return false;">­ƒôï Field Visibility & Labels</a>
+                <a href="#" onclick="openPrintSettings(); return false;">­ƒû╝´©Å Upload Company Logo</a>
             </div>
         </li>
 
         <?php if ($_SESSION['role'] === 'admin'): ?>
         <li>
-            <a href="#">Settings ▾</a>
+            <a href="#">Settings Ôû¥</a>
             <div class="dropdown-menu">
-                <a href="?action=backup" onclick="return confirm('Do you want to take database backup now?');">📦 Backup Database</a>
-                <a href="#" class="disabled-link" onclick="return false;">♻ Restore Database (Disabled)</a>
-                <a href="?action=reset" onclick="return confirm('Normal Reset? Pending slips must be completed.');">🔄 Reset Slip Number</a>
-                <a href="?action=reset&force=1" onclick="return confirm('FORCE RESET will delete even running weighments. Are you sure?');">⚠ Force Reset</a>
+                <a href="?action=backup" onclick="return confirm('Do you want to take database backup now?');">­ƒôª Backup Database</a>
+                <a href="#" class="disabled-link" onclick="return false;">ÔÖ╗ Restore Database (Disabled)</a>
+                <a href="?action=reset" onclick="return confirm('Normal Reset? Pending slips must be completed.');">­ƒöä Reset Slip Number</a>
+                <a href="?action=reset&force=1" onclick="return confirm('FORCE RESET will delete even running weighments. Are you sure?');">ÔÜá Force Reset</a>
             </div>
         </li>
         <li><a href="admin_page.php">Dashboard</a></li>
@@ -1124,7 +1104,7 @@ body {
         <div class="win95-titlebar">
             <span>Print Slip Layout & Field Configuration</span>
             <div class="win95-titlebar-actions">
-                <button type="button" class="win95-titlebar-btn" onclick="closePrintSettings()" title="Close">✕</button>
+                <button type="button" class="win95-titlebar-btn" onclick="closePrintSettings()" title="Close">Ô£ò</button>
             </div>
         </div>
 
@@ -1137,7 +1117,7 @@ body {
                     <div class="win95-group-title">
                         <span>1. Active Print Slip Layout</span>
                         <button type="button" class="win95-btn" onclick="syncTemplatesCatalog(this)" title="Sync all templates from cloud">
-                            🔄 Sync
+                            ­ƒöä Sync
                         </button>
                     </div>
 
@@ -1154,7 +1134,7 @@ body {
 
                         <!-- PREVIEW BUTTON -->
                         <button type="button" class="win95-btn" onclick="triggerLocalNativePrintPreview(this)" title="Preview exact browser print output with your logo">
-                            👁️ Preview
+                            ­ƒæü´©Å Preview
                         </button>
 
                         <!-- DOWNLOAD / DOWNLOADED / DEFAULT PRINT BUTTON -->
@@ -1216,10 +1196,10 @@ body {
 
             <!-- Footer Buttons -->
             <div class="win95-footer">
-                <button type="submit" class="win95-btn win95-btn-primary" style="padding:10px 32px;font-size:15.5px;">💾 Save Print Settings</button>
+                <button type="submit" class="win95-btn win95-btn-primary" style="padding:10px 32px;font-size:15.5px;">­ƒÆ¥ Save Print Settings</button>
                 <button type="button" class="win95-btn" onclick="closePrintSettings()" style="padding:10px 24px;font-size:15.5px;">Cancel</button>
                 <!-- Drag Grip Indicator -->
-                <div class="win95-corner-grip">◢</div>
+                <div class="win95-corner-grip">Ôùó</div>
             </div>
         </form>
     </div>
@@ -1233,7 +1213,7 @@ body {
         <div class="win95-titlebar">
             <span>Camera Configuration</span>
             <div class="win95-titlebar-actions">
-                <button type="button" class="win95-titlebar-btn" onclick="closeCameraSettings()" title="Close">✕</button>
+                <button type="button" class="win95-titlebar-btn" onclick="closeCameraSettings()" title="Close">Ô£ò</button>
             </div>
         </div>
         <div class="win95-body">
@@ -1272,9 +1252,9 @@ body {
         </div>
 
         <div class="win95-footer">
-            <button onclick="saveCameraSettings()" class="win95-btn win95-btn-primary" style="padding:10px 32px;font-size:15.5px;">💾 Save Settings</button>
+            <button onclick="saveCameraSettings()" class="win95-btn win95-btn-primary" style="padding:10px 32px;font-size:15.5px;">­ƒÆ¥ Save Settings</button>
             <button type="button" class="win95-btn" onclick="closeCameraSettings()" style="padding:10px 24px;font-size:15.5px;">Cancel</button>
-            <div class="win95-corner-grip">◢</div>
+            <div class="win95-corner-grip">Ôùó</div>
         </div>
     </div>
 </div>
@@ -1304,10 +1284,10 @@ function previewSelectedLogo(input) {
     }
 }
 
-// 🔄 1. SYNC: Loads and refreshes all templates list from cloud
+// ­ƒöä 1. SYNC: Loads and refreshes all templates list from cloud
 function syncTemplatesCatalog(btn, isSilent = false) {
-    const originalText = btn ? btn.innerText : "🔄 Sync";
-    if (btn) btn.innerText = "⏳ Syncing...";
+    const originalText = btn ? btn.innerText : "­ƒöä Sync";
+    if (btn) btn.innerText = "ÔÅ│ Syncing...";
 
     fetch("header.php?action=get_cloud_formats_catalog")
         .then(res => res.json())
@@ -1343,7 +1323,7 @@ function syncTemplatesCatalog(btn, isSilent = false) {
                     updateSelectedTemplateStatus();
                 }
                 if (!isSilent) {
-                    alert("✓ Synced " + catalog.length + " layout templates from Cloud catalog!");
+                    alert("Ô£ô Synced " + catalog.length + " layout templates from Cloud catalog!");
                 }
             }
         })
@@ -1353,7 +1333,7 @@ function syncTemplatesCatalog(btn, isSilent = false) {
         });
 }
 
-// 🏷️ 2. Updates the button to "Default Print" or "Downloaded" or "Download"
+// ­ƒÅÀ´©Å 2. Updates the button to "Default Print" or "Downloaded" or "Download"
 function updateSelectedTemplateStatus() {
     const selectEl = document.getElementById("local_print_layout_select");
     const btn = document.getElementById("btn_download_single");
@@ -1392,14 +1372,14 @@ function updateSelectedTemplateStatus() {
     }
 }
 
-// 👁️ 3. LOCAL NATIVE BROWSER PRINT PREVIEW (RENDERS CUSTOMER'S ACTUAL LOGO & DATA)
+// ­ƒæü´©Å 3. LOCAL NATIVE BROWSER PRINT PREVIEW (RENDERS CUSTOMER'S ACTUAL LOGO & DATA)
 function triggerLocalNativePrintPreview(btn) {
     const selectEl = document.getElementById("local_print_layout_select");
     if (!selectEl) return;
     const selectedKey = selectEl.value;
 
-    const originalText = btn ? btn.innerText : "👁️ Preview";
-    if (btn) btn.innerText = "⏳ Loading...";
+    const originalText = btn ? btn.innerText : "­ƒæü´©Å Preview";
+    if (btn) btn.innerText = "ÔÅ│ Loading...";
 
     let oldFrame = document.getElementById("hiddenLocalPrintFrame");
     if (oldFrame) oldFrame.remove();
@@ -1422,14 +1402,14 @@ function triggerLocalNativePrintPreview(btn) {
     document.body.appendChild(iframe);
 }
 
-// ⬇ 4. DOWNLOAD BUTTON: Downloads ONLY the chosen template
+// Ô¼ç 4. DOWNLOAD BUTTON: Downloads ONLY the chosen template
 function downloadSelectedTemplate(btn) {
     const selectEl = document.getElementById("local_print_layout_select");
     if (!selectEl) return;
 
     const selectedKey = selectEl.value;
     if (selectedKey === "default_slip") {
-        alert("✓ This is the built-in local static default layout (templates/default_slip.php).");
+        alert("Ô£ô This is the built-in local static default layout (templates/default_slip.php).");
         return;
     }
 
@@ -1443,7 +1423,7 @@ function downloadSelectedTemplate(btn) {
                 const found = cloudTemplatesCatalog.find(f => (f.format_key || f.id) === selectedKey);
                 if (found) found.is_cached = true;
                 updateSelectedTemplateStatus();
-                alert("✓ " + data.message);
+                alert("Ô£ô " + data.message);
             } else {
                 if (btn) btn.innerText = originalText;
                 alert("Download Notice: " + (data.message || "Failed to download template."));
@@ -1534,7 +1514,7 @@ document.addEventListener("DOMContentLoaded", function () {
 });
 
 /* ============================================================
-   WINDOW CLOSE (✖ BUTTON) BEACON DISPATCHER
+   WINDOW CLOSE (Ô£û BUTTON) BEACON DISPATCHER
    ============================================================ */
 window.addEventListener("pagehide", function () {
     const cloudSyncUrl = "https://weighbridge.online-weighing.in/sync_company_log.php";

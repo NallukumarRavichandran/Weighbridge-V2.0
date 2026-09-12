@@ -5,9 +5,6 @@ let lastWeight = null;
 let sameCount = 0;
 var weightFrozen = false;
 let isConnecting = false;
-let lastPacketTime = Date.now();
-let watchdogWorker = null;
-let bgAudioKeepAlive = null;
 
 /* ============================================================
    SCALE PROFILE (LOCKED TO 2400 8N1 AS PER HARDWARE INDICATOR)
@@ -83,7 +80,7 @@ async function cleanupSerialHandles() {
 
 /* DIRECT SCALE CONNECTION ENGINE (CONNECT DIRECTLY AT 2400 8N1) */
 async function connectScaleDirect() {
-    if (port && port.readable && reader) {
+    if (port && port.readable) {
         setStatus("CONNECTED (2400)", "#16a34a");
         closeScaleDialog();
         return;
@@ -131,7 +128,6 @@ async function connectScaleDirect() {
         closeScaleDialog();
 
         lineBuffer = "";
-        lastPacketTime = Date.now();
         readScale();
 
     } catch (err) {
@@ -161,7 +157,7 @@ async function disconnectScale() {
 
 /* AUTO-RECONNECT ON PAGE LOAD / RELOAD WITH PROGRESSIVE RETRIES (UP TO 5 ATTEMPTS) */
 async function autoReconnect(retryCount = 0) {
-    if (port && port.readable && reader) {
+    if (port && port.readable) {
         setStatus("CONNECTED (2400)", "#16a34a");
         return;
     }
@@ -185,7 +181,6 @@ async function autoReconnect(retryCount = 0) {
             });
 
             lineBuffer = "";
-            lastPacketTime = Date.now();
             readScale();
             setStatus("CONNECTED (2400)", "#16a34a");
             console.log("Scale Auto-Connected (2400 Baud)");
@@ -210,17 +205,12 @@ async function autoReconnect(retryCount = 0) {
 /* READ SCALE STREAM (CONTINUOUS ASYNC READER WITH AUTO-RECOVERY) */
 async function readScale() {
     const decoder = new TextDecoder();
-    if (!port || !port.readable) {
-        autoReconnect(0);
-        return;
-    }
+    if (!port || !port.readable) return;
 
     try {
         reader = port.readable.getReader();
     } catch (err) {
-        console.error("Failed to acquire reader, resetting connection:", err);
-        await cleanupSerialHandles();
-        setTimeout(() => autoReconnect(0), 400);
+        console.error("Failed to acquire reader:", err);
         return;
     }
 
@@ -233,8 +223,6 @@ async function readScale() {
                 console.log("Scale stream closed by host/port.");
                 break;
             }
-
-            lastPacketTime = Date.now();
 
             const text = decoder.decode(value, { stream: true });
             lineBuffer += text;
@@ -311,9 +299,12 @@ async function readScale() {
             reader = null;
         }
 
-        // Full teardown of handles and clean auto-reconnection
-        await cleanupSerialHandles();
-        setTimeout(() => autoReconnect(0), 400);
+        // Keep stream alive: if port is readable, immediately re-acquire reader; otherwise auto-reconnect
+        if (port && port.readable) {
+            setTimeout(readScale, 200);
+        } else {
+            setTimeout(() => autoReconnect(0), 500);
+        }
     }
 }
 
@@ -367,72 +358,3 @@ function closeScaleDialog() {
     const dlg = document.getElementById("scaleDialog");
     if (dlg) dlg.style.display = "none";
 }
-
-/* ============================================================
-   BACKGROUND STREAM KEEPALIVE & SELF-HEALING WATCHDOG
-   Prevents weight from freezing when tab is minimized or in background
-   ============================================================ */
-
-// 1. Silent Web Audio Keep-Alive to prevent aggressive background tab suspension in Chromium
-function startBackgroundKeepAlive() {
-    try {
-        if (!bgAudioKeepAlive && (window.AudioContext || window.webkitAudioContext)) {
-            const AudioCtx = window.AudioContext || window.webkitAudioContext;
-            bgAudioKeepAlive = new AudioCtx();
-            const osc = bgAudioKeepAlive.createOscillator();
-            const gain = bgAudioKeepAlive.createGain();
-            gain.gain.value = 0.00001; // Silent / inaudible
-            osc.connect(gain);
-            gain.connect(bgAudioKeepAlive.destination);
-            osc.start();
-        }
-        if (bgAudioKeepAlive && bgAudioKeepAlive.state === "suspended") {
-            bgAudioKeepAlive.resume();
-        }
-    } catch(e) {}
-}
-
-// 2. Health Checker function: detects stalled stream and revives immediately
-function checkScaleHealth() {
-    const connEl = document.getElementById("connStatus");
-    const isSupposedToBeConnected = connEl && connEl.innerText.includes("CONNECTED");
-
-    if (isSupposedToBeConnected) {
-        const elapsed = Date.now() - lastPacketTime;
-        if (elapsed > 3000) {
-            console.warn("Scale stream inactive for " + elapsed + "ms (background stall detected) - reviving connection...");
-            lastPacketTime = Date.now();
-            cleanupSerialHandles().then(() => autoReconnect(0));
-        }
-    }
-}
-
-// 3. Web Worker based unthrottled background heartbeat
-try {
-    const blob = new Blob([
-        "setInterval(function() { postMessage('tick'); }, 1500);"
-    ], { type: "application/javascript" });
-    watchdogWorker = new Worker(URL.createObjectURL(blob));
-    watchdogWorker.onmessage = function() {
-        checkScaleHealth();
-    };
-} catch(e) {
-    setInterval(checkScaleHealth, 2000);
-}
-
-// 4. Foreground / Tab Focus Watchdog (immediate revival when user clicks back)
-document.addEventListener("visibilitychange", function() {
-    if (document.visibilityState === "visible") {
-        checkScaleHealth();
-        startBackgroundKeepAlive();
-    }
-});
-
-window.addEventListener("focus", function() {
-    checkScaleHealth();
-    startBackgroundKeepAlive();
-});
-
-// Enable audio keep-alive on any user interaction
-document.addEventListener("click", startBackgroundKeepAlive, { once: false });
-document.addEventListener("keydown", startBackgroundKeepAlive, { once: false });

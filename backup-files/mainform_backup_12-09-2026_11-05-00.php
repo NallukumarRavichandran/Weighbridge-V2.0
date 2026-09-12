@@ -557,7 +557,7 @@ function recordSelectedWeight() {
     const liveEl = document.getElementById("live_weight");
     let live = liveEl ? liveEl.innerText.trim() : "";
 
-    if (live === "" || isNaN(parseFloat(live))) {
+    if (!live || parseFloat(live) === 0 || isNaN(parseFloat(live))) {
         alert("NO WEIGHT DETECTED FROM SCALE");
         return;
     }
@@ -710,12 +710,6 @@ document.addEventListener("DOMContentLoaded", function () {
 window.addEventListener("beforeunload", function () {
     if (typeof disconnectScale === "function") {
         disconnectScale();
-    }
-});
-
-document.addEventListener("DOMContentLoaded", function () {
-    if (typeof autoReconnect === "function") {
-        autoReconnect();
     }
 });
 
@@ -930,39 +924,14 @@ function scanCamerasForPlate(camsList, index) {
     const camData = camObj.data;
     const camNum = camObj.num;
 
-    // Grab frame directly from the active live camera feed on screen (Instant 0ms, no camera network contention)
-    let postBody = null;
-    let scanHeaders = {};
-    let scanUrl = "anpr_scan.php";
+    let camUser = (camData.user || "admin").trim();
+    if (camUser.toLowerCase() === "admin") camUser = "admin";
 
-    const imgEl = document.getElementById("cam_live_" + camNum);
-    if (imgEl && (imgEl.naturalWidth > 0 || imgEl.clientWidth > 0)) {
-        try {
-            const canvas = document.createElement("canvas");
-            canvas.width = imgEl.naturalWidth || imgEl.clientWidth || 704;
-            canvas.height = imgEl.naturalHeight || imgEl.clientHeight || 576;
-            const ctx = canvas.getContext("2d");
-            ctx.drawImage(imgEl, 0, 0, canvas.width, canvas.height);
-            const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
-            if (dataUrl && dataUrl.length > 500) {
-                postBody = JSON.stringify({ image: dataUrl });
-                scanHeaders = { "Content-Type": "application/json" };
-            }
-        } catch (cvErr) {
-            console.warn("Canvas capture note:", cvErr);
-        }
-    }
+    const scanUrl = "anpr_scan.php?url=" + encodeURIComponent(camData.url.trim()) + 
+                    "&user=" + encodeURIComponent(camUser) + 
+                    "&pass=" + encodeURIComponent(camData.pass || "");
 
-    const fetchOptions = postBody ? { method: "POST", headers: scanHeaders, body: postBody } : { method: "GET" };
-    if (!postBody) {
-        let camUser = (camData.user || "admin").trim();
-        if (camUser.toLowerCase() === "admin") camUser = "admin";
-        scanUrl = "anpr_scan.php?url=" + encodeURIComponent(camData.url.trim()) + 
-                  "&user=" + encodeURIComponent(camUser) + 
-                  "&pass=" + encodeURIComponent(camData.pass || "");
-    }
-
-    fetch(scanUrl, fetchOptions)
+    fetch(scanUrl)
         .then(res => res.json())
         .then(data => {
             if (data && data.status === "success" && data.plate) {
@@ -995,6 +964,14 @@ function scanCamerasForPlate(camsList, index) {
 
                 // Auto-populate past vehicle data and tare/gross history
                 handleVehicleTyping(detected);
+
+                // Instantly re-sync camera streams so they never pause or stall after an ANPR hit
+                for (let c = 1; c <= 4; c++) {
+                    const el = document.getElementById("cam_live_" + c);
+                    if (el && typeof el.reconnectStream === "function") {
+                        el.reconnectStream();
+                    }
+                }
             } else {
                 // If this camera didn't see a plate, check the next enabled camera in list
                 scanCamerasForPlate(camsList, index + 1);

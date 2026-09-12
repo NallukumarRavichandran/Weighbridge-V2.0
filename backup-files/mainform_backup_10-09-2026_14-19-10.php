@@ -62,9 +62,6 @@ if (isset($_GET['camera']))
             curl_setopt($ch, CURLOPT_USERPWD, "$camUser:$camPass");
             curl_setopt($ch, CURLOPT_TIMEOUT, 0); // Infinite continuous live stream
             curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 4);
-            curl_setopt($ch, CURLOPT_TCP_KEEPALIVE, 1);
-            curl_setopt($ch, CURLOPT_TCP_KEEPIDLE, 15);
-            curl_setopt($ch, CURLOPT_TCP_KEEPINTVL, 10);
             curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
             curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
             curl_setopt($ch, CURLOPT_BUFFERSIZE, 8192);
@@ -557,7 +554,7 @@ function recordSelectedWeight() {
     const liveEl = document.getElementById("live_weight");
     let live = liveEl ? liveEl.innerText.trim() : "";
 
-    if (live === "" || isNaN(parseFloat(live))) {
+    if (!live || parseFloat(live) === 0 || isNaN(parseFloat(live))) {
         alert("NO WEIGHT DETECTED FROM SCALE");
         return;
     }
@@ -632,8 +629,6 @@ function resetWeighment() {
         vNo.style.display = "inline-block";
         vNo.value = "";
     }
-    const anprBadge = document.getElementById("anpr_status_badge");
-    if (anprBadge) anprBadge.style.display = "none";
 
     if (vSel) {
         vSel.style.display = "none";
@@ -713,12 +708,6 @@ window.addEventListener("beforeunload", function () {
     }
 });
 
-document.addEventListener("DOMContentLoaded", function () {
-    if (typeof autoReconnect === "function") {
-        autoReconnect();
-    }
-});
-
 window.addEventListener("load", function () {
     setTimeout(function () {
         if (typeof autoReconnect === "function") {
@@ -785,8 +774,6 @@ function applyCameraGridVisibility() {
     startLiveCameraStreaming();
 }
 
-let streamWatchdogTimer = null;
-
 function startLiveCameraStreaming() {
     stopLiveCameraStreaming();
 
@@ -810,19 +797,13 @@ function startLiveCameraStreaming() {
             if (camUserVal.toLowerCase() === "admin") {
                 camUserVal = "admin";
             }
-            const baseStreamUrl = "mainform.php?camera=" + c + 
-                                  "&stream=1" +
-                                  "&url=" + encodeURIComponent(rawUrl) + 
-                                  "&user=" + encodeURIComponent(camUserVal) + 
-                                  "&pass=" + encodeURIComponent(camData.pass || "");
+            const streamUrl = "mainform.php?camera=" + c + 
+                            "&stream=1" +
+                            "&url=" + encodeURIComponent(rawUrl) + 
+                            "&user=" + encodeURIComponent(camUserVal) + 
+                            "&pass=" + encodeURIComponent(camData.pass || "");
 
             if (imgEl) {
-                // Attach reconnect method to DOM element for seamless watchdog cycling
-                imgEl.reconnectStream = function () {
-                    if (localStorage.getItem("weighbridge_cam_active") !== "true") return;
-                    imgEl.src = baseStreamUrl + "&t=" + Date.now();
-                };
-
                 imgEl.onload = function() {
                     imgEl.style.display = "block";
                     if (statusEl) statusEl.style.display = "none";
@@ -831,15 +812,15 @@ function startLiveCameraStreaming() {
                     imgEl.style.display = "none";
                     if (statusEl) {
                         statusEl.style.display = "block";
-                        statusEl.innerText = "RECONNECTING...";
+                        statusEl.innerText = "OFFLINE";
                     }
                     setTimeout(() => {
-                        if (localStorage.getItem("weighbridge_cam_active") === "true" && typeof imgEl.reconnectStream === "function") {
-                            imgEl.reconnectStream();
+                        if (localStorage.getItem("weighbridge_cam_active") === "true" && imgEl.style.display === "none") {
+                            imgEl.src = streamUrl + "&t=" + new Date().getTime();
                         }
-                    }, 2000);
+                    }, 4000);
                 };
-                imgEl.src = baseStreamUrl + "&t=" + Date.now();
+                imgEl.src = streamUrl;
                 imgEl.style.display = "block";
                 if (statusEl) statusEl.style.display = "none";
             }
@@ -854,163 +835,12 @@ function startLiveCameraStreaming() {
             }
         }
     }
-    startAnprAutoScanner();
-
-    // 🛡️ STREAM HEALTH WATCHDOG:
-    // Periodically re-syncs the socket every 25 seconds to guarantee 24/7 uninterrupted 25-30 FPS live video with ZERO freezing!
-    streamWatchdogTimer = setInterval(() => {
-        if (localStorage.getItem("weighbridge_cam_active") === "true") {
-            for (let c = 1; c <= 4; c++) {
-                const imgEl = document.getElementById("cam_live_" + c);
-                if (imgEl && typeof imgEl.reconnectStream === "function") {
-                    imgEl.reconnectStream();
-                }
-            }
-        }
-    }, 25 * 1000); // 25 seconds
-}
-
-let anprScannerTimer = null;
-let anprScanning = false;
-
-function startAnprAutoScanner() {
-    stopAnprAutoScanner();
-    // Run continuous background scan every 3.5 seconds
-    anprScannerTimer = setInterval(runContinuousAnprScan, 3500);
-}
-
-function stopAnprAutoScanner() {
-    if (anprScannerTimer) {
-        clearInterval(anprScannerTimer);
-        anprScannerTimer = null;
-    }
-    anprScanning = false;
-}
-
-function runContinuousAnprScan() {
-    const isGlobalActive = localStorage.getItem("weighbridge_cam_active") === "true";
-    if (!isGlobalActive || anprScanning) return;
-
-    const vInput = document.getElementById("vehicle_no");
-    if (!vInput) return;
-
-    // Only scan if the field is currently empty and the user is not actively typing
-    if (vInput.value.trim() !== "" || document.activeElement === vInput) {
-        return;
-    }
-
-    let savedConfig = {};
-    try {
-        savedConfig = JSON.parse(localStorage.getItem("weighbridge_cam_config") || "{}");
-    } catch(e) {}
-
-    // Find all active/enabled cameras
-    const activeCams = [];
-    for (let c = 1; c <= 4; c++) {
-        const cam = savedConfig["cam_" + c];
-        if (cam && cam.enabled !== false && cam.url) {
-            activeCams.push({ num: c, data: cam });
-        }
-    }
-
-    if (activeCams.length === 0) return;
-
-    anprScanning = true;
-    scanCamerasForPlate(activeCams, 0);
-}
-
-function scanCamerasForPlate(camsList, index) {
-    const vInput = document.getElementById("vehicle_no");
-    if (!vInput || vInput.value.trim() !== "" || document.activeElement === vInput || index >= camsList.length) {
-        anprScanning = false;
-        return;
-    }
-
-    const camObj = camsList[index];
-    const camData = camObj.data;
-    const camNum = camObj.num;
-
-    // Grab frame directly from the active live camera feed on screen (Instant 0ms, no camera network contention)
-    let postBody = null;
-    let scanHeaders = {};
-    let scanUrl = "anpr_scan.php";
-
-    const imgEl = document.getElementById("cam_live_" + camNum);
-    if (imgEl && (imgEl.naturalWidth > 0 || imgEl.clientWidth > 0)) {
-        try {
-            const canvas = document.createElement("canvas");
-            canvas.width = imgEl.naturalWidth || imgEl.clientWidth || 704;
-            canvas.height = imgEl.naturalHeight || imgEl.clientHeight || 576;
-            const ctx = canvas.getContext("2d");
-            ctx.drawImage(imgEl, 0, 0, canvas.width, canvas.height);
-            const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
-            if (dataUrl && dataUrl.length > 500) {
-                postBody = JSON.stringify({ image: dataUrl });
-                scanHeaders = { "Content-Type": "application/json" };
-            }
-        } catch (cvErr) {
-            console.warn("Canvas capture note:", cvErr);
-        }
-    }
-
-    const fetchOptions = postBody ? { method: "POST", headers: scanHeaders, body: postBody } : { method: "GET" };
-    if (!postBody) {
-        let camUser = (camData.user || "admin").trim();
-        if (camUser.toLowerCase() === "admin") camUser = "admin";
-        scanUrl = "anpr_scan.php?url=" + encodeURIComponent(camData.url.trim()) + 
-                  "&user=" + encodeURIComponent(camUser) + 
-                  "&pass=" + encodeURIComponent(camData.pass || "");
-    }
-
-    fetch(scanUrl, fetchOptions)
-        .then(res => res.json())
-        .then(data => {
-            if (data && data.status === "success" && data.plate) {
-                anprScanning = false;
-                const detected = data.plate.trim().toUpperCase();
-
-                // If user started typing while scan was in-flight, do not overwrite
-                if (vInput.value.trim() !== "" || document.activeElement === vInput) return;
-
-                // Instant direct single-hit auto-fill
-                vInput.value = detected;
-
-                // Visual confirmation badge specifying which camera detected the plate
-                const badge = document.getElementById("anpr_status_badge");
-                if (badge) {
-                    badge.innerText = "✓ ANPR (CAM " + camNum + "): " + detected;
-                    badge.style.display = "inline-block";
-                    badge.style.background = "#dcfce7";
-                    badge.style.color = "#166534";
-                    badge.style.border = "1px solid #86efac";
-                }
-
-                // Green glow animation on vehicle input
-                vInput.style.borderColor = "#16a34a";
-                vInput.style.boxShadow = "0 0 8px rgba(22,163,74,0.6)";
-                setTimeout(() => {
-                    vInput.style.borderColor = "";
-                    vInput.style.boxShadow = "";
-                }, 2500);
-
-                // Auto-populate past vehicle data and tare/gross history
-                handleVehicleTyping(detected);
-            } else {
-                // If this camera didn't see a plate, check the next enabled camera in list
-                scanCamerasForPlate(camsList, index + 1);
-            }
-        })
-        .catch(() => {
-            // On network hiccup, continue checking remaining cameras
-            scanCamerasForPlate(camsList, index + 1);
-        });
 }
 
 function stopLiveCameraStreaming() {
-    stopAnprAutoScanner();
-    if (streamWatchdogTimer) {
-        clearInterval(streamWatchdogTimer);
-        streamWatchdogTimer = null;
+    if (cameraPollingTimer) {
+        clearInterval(cameraPollingTimer);
+        cameraPollingTimer = null;
     }
     for (let c = 1; c <= 4; c++) {
         const imgEl = document.getElementById("cam_live_" + c);
@@ -1073,7 +903,6 @@ document.addEventListener("DOMContentLoaded", function () {
     style="text-transform:uppercase;"
     placeholder="ENTER VEHICLE NO"
     oninput="this.value=this.value.toUpperCase().replace(/[^A-Z0-9]/g, ''); handleVehicleTyping(this.value);">
-<span id="anpr_status_badge" style="display:none;margin-left:8px;font-size:11.5px;font-weight:bold;padding:3px 8px;border-radius:4px;vertical-align:middle;"></span>
 <select id="vehicle_select" style="display:none;width:220px;"></select>
 </div>
 

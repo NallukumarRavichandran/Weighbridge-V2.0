@@ -14,5 +14,7 @@ captures/*.png
 # Temporary editor / script files
 *.tmp
 *.log
+*.bak
+test/
 .vscode/
 .idea/

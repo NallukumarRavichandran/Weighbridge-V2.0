@@ -557,7 +557,7 @@ function recordSelectedWeight() {
     const liveEl = document.getElementById("live_weight");
     let live = liveEl ? liveEl.innerText.trim() : "";
 
-    if (live === "" || isNaN(parseFloat(live))) {
+    if (!live || parseFloat(live) === 0 || isNaN(parseFloat(live))) {
         alert("NO WEIGHT DETECTED FROM SCALE");
         return;
     }
@@ -713,12 +713,6 @@ window.addEventListener("beforeunload", function () {
     }
 });
 
-document.addEventListener("DOMContentLoaded", function () {
-    if (typeof autoReconnect === "function") {
-        autoReconnect();
-    }
-});
-
 window.addEventListener("load", function () {
     setTimeout(function () {
         if (typeof autoReconnect === "function") {
@@ -784,8 +778,6 @@ function applyCameraGridVisibility() {
 
     startLiveCameraStreaming();
 }
-
-let streamWatchdogTimer = null;
 
 function startLiveCameraStreaming() {
     stopLiveCameraStreaming();
@@ -857,7 +849,8 @@ function startLiveCameraStreaming() {
     startAnprAutoScanner();
 
     // 🛡️ STREAM HEALTH WATCHDOG:
-    // Periodically re-syncs the socket every 25 seconds to guarantee 24/7 uninterrupted 25-30 FPS live video with ZERO freezing!
+    // Seamlessly refreshes the streaming socket every 7 minutes (well before the camera's 15-minute socket cap)
+    // to guarantee 24/7 uninterrupted live video with ZERO freezing!
     streamWatchdogTimer = setInterval(() => {
         if (localStorage.getItem("weighbridge_cam_active") === "true") {
             for (let c = 1; c <= 4; c++) {
@@ -867,8 +860,10 @@ function startLiveCameraStreaming() {
                 }
             }
         }
-    }, 25 * 1000); // 25 seconds
+    }, 7 * 60 * 1000); // 7 minutes
 }
+
+let streamWatchdogTimer = null;
 
 let anprScannerTimer = null;
 let anprScanning = false;
@@ -930,39 +925,14 @@ function scanCamerasForPlate(camsList, index) {
     const camData = camObj.data;
     const camNum = camObj.num;
 
-    // Grab frame directly from the active live camera feed on screen (Instant 0ms, no camera network contention)
-    let postBody = null;
-    let scanHeaders = {};
-    let scanUrl = "anpr_scan.php";
+    let camUser = (camData.user || "admin").trim();
+    if (camUser.toLowerCase() === "admin") camUser = "admin";
 
-    const imgEl = document.getElementById("cam_live_" + camNum);
-    if (imgEl && (imgEl.naturalWidth > 0 || imgEl.clientWidth > 0)) {
-        try {
-            const canvas = document.createElement("canvas");
-            canvas.width = imgEl.naturalWidth || imgEl.clientWidth || 704;
-            canvas.height = imgEl.naturalHeight || imgEl.clientHeight || 576;
-            const ctx = canvas.getContext("2d");
-            ctx.drawImage(imgEl, 0, 0, canvas.width, canvas.height);
-            const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
-            if (dataUrl && dataUrl.length > 500) {
-                postBody = JSON.stringify({ image: dataUrl });
-                scanHeaders = { "Content-Type": "application/json" };
-            }
-        } catch (cvErr) {
-            console.warn("Canvas capture note:", cvErr);
-        }
-    }
+    const scanUrl = "anpr_scan.php?url=" + encodeURIComponent(camData.url.trim()) + 
+                    "&user=" + encodeURIComponent(camUser) + 
+                    "&pass=" + encodeURIComponent(camData.pass || "");
 
-    const fetchOptions = postBody ? { method: "POST", headers: scanHeaders, body: postBody } : { method: "GET" };
-    if (!postBody) {
-        let camUser = (camData.user || "admin").trim();
-        if (camUser.toLowerCase() === "admin") camUser = "admin";
-        scanUrl = "anpr_scan.php?url=" + encodeURIComponent(camData.url.trim()) + 
-                  "&user=" + encodeURIComponent(camUser) + 
-                  "&pass=" + encodeURIComponent(camData.pass || "");
-    }
-
-    fetch(scanUrl, fetchOptions)
+    fetch(scanUrl)
         .then(res => res.json())
         .then(data => {
             if (data && data.status === "success" && data.plate) {
@@ -972,7 +942,6 @@ function scanCamerasForPlate(camsList, index) {
                 // If user started typing while scan was in-flight, do not overwrite
                 if (vInput.value.trim() !== "" || document.activeElement === vInput) return;
 
-                // Instant direct single-hit auto-fill
                 vInput.value = detected;
 
                 // Visual confirmation badge specifying which camera detected the plate
@@ -1011,6 +980,10 @@ function stopLiveCameraStreaming() {
     if (streamWatchdogTimer) {
         clearInterval(streamWatchdogTimer);
         streamWatchdogTimer = null;
+    }
+    if (cameraPollingTimer) {
+        clearInterval(cameraPollingTimer);
+        cameraPollingTimer = null;
     }
     for (let c = 1; c <= 4; c++) {
         const imgEl = document.getElementById("cam_live_" + c);

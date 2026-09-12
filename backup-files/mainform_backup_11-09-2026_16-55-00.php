@@ -557,7 +557,7 @@ function recordSelectedWeight() {
     const liveEl = document.getElementById("live_weight");
     let live = liveEl ? liveEl.innerText.trim() : "";
 
-    if (live === "" || isNaN(parseFloat(live))) {
+    if (!live || parseFloat(live) === 0 || isNaN(parseFloat(live))) {
         alert("NO WEIGHT DETECTED FROM SCALE");
         return;
     }
@@ -713,12 +713,6 @@ window.addEventListener("beforeunload", function () {
     }
 });
 
-document.addEventListener("DOMContentLoaded", function () {
-    if (typeof autoReconnect === "function") {
-        autoReconnect();
-    }
-});
-
 window.addEventListener("load", function () {
     setTimeout(function () {
         if (typeof autoReconnect === "function") {
@@ -785,7 +779,7 @@ function applyCameraGridVisibility() {
     startLiveCameraStreaming();
 }
 
-let streamWatchdogTimer = null;
+let camStreamTimers = {};
 
 function startLiveCameraStreaming() {
     stopLiveCameraStreaming();
@@ -800,49 +794,11 @@ function startLiveCameraStreaming() {
 
     for (let c = 1; c <= 4; c++) {
         const camData  = savedConfig["cam_" + c];
-        const cardEl   = document.getElementById("cam_card_" + c);
         const imgEl    = document.getElementById("cam_live_" + c);
         const statusEl = document.getElementById("cam_status_" + c);
 
         if (camData && camData.enabled !== false && camData.url) {
-            const rawUrl = camData.url.trim();
-            let camUserVal = (camData.user || "admin").trim();
-            if (camUserVal.toLowerCase() === "admin") {
-                camUserVal = "admin";
-            }
-            const baseStreamUrl = "mainform.php?camera=" + c + 
-                                  "&stream=1" +
-                                  "&url=" + encodeURIComponent(rawUrl) + 
-                                  "&user=" + encodeURIComponent(camUserVal) + 
-                                  "&pass=" + encodeURIComponent(camData.pass || "");
-
-            if (imgEl) {
-                // Attach reconnect method to DOM element for seamless watchdog cycling
-                imgEl.reconnectStream = function () {
-                    if (localStorage.getItem("weighbridge_cam_active") !== "true") return;
-                    imgEl.src = baseStreamUrl + "&t=" + Date.now();
-                };
-
-                imgEl.onload = function() {
-                    imgEl.style.display = "block";
-                    if (statusEl) statusEl.style.display = "none";
-                };
-                imgEl.onerror = function() {
-                    imgEl.style.display = "none";
-                    if (statusEl) {
-                        statusEl.style.display = "block";
-                        statusEl.innerText = "RECONNECTING...";
-                    }
-                    setTimeout(() => {
-                        if (localStorage.getItem("weighbridge_cam_active") === "true" && typeof imgEl.reconnectStream === "function") {
-                            imgEl.reconnectStream();
-                        }
-                    }, 2000);
-                };
-                imgEl.src = baseStreamUrl + "&t=" + Date.now();
-                imgEl.style.display = "block";
-                if (statusEl) statusEl.style.display = "none";
-            }
+            startCameraLoop(c, camData);
         } else {
             if (imgEl) {
                 imgEl.src = "";
@@ -855,19 +811,69 @@ function startLiveCameraStreaming() {
         }
     }
     startAnprAutoScanner();
+}
 
-    // 🛡️ STREAM HEALTH WATCHDOG:
-    // Periodically re-syncs the socket every 25 seconds to guarantee 24/7 uninterrupted 25-30 FPS live video with ZERO freezing!
-    streamWatchdogTimer = setInterval(() => {
-        if (localStorage.getItem("weighbridge_cam_active") === "true") {
-            for (let c = 1; c <= 4; c++) {
-                const imgEl = document.getElementById("cam_live_" + c);
-                if (imgEl && typeof imgEl.reconnectStream === "function") {
-                    imgEl.reconnectStream();
+function startCameraLoop(c, camData) {
+    const rawUrl = camData.url.trim();
+    let camUserVal = (camData.user || "admin").trim();
+    if (camUserVal.toLowerCase() === "admin") camUserVal = "admin";
+
+    const baseSnapshotUrl = "mainform.php?camera=" + c + 
+                            "&url=" + encodeURIComponent(rawUrl) + 
+                            "&user=" + encodeURIComponent(camUserVal) + 
+                            "&pass=" + encodeURIComponent(camData.pass || "");
+
+    function fetchNextFrame() {
+        if (localStorage.getItem("weighbridge_cam_active") !== "true") return;
+
+        const imgEl = document.getElementById("cam_live_" + c);
+        const statusEl = document.getElementById("cam_status_" + c);
+        if (!imgEl) return;
+
+        let frameDone = false;
+        const tempImg = new Image();
+
+        // 3.5s watchdog for this single frame: if camera is busy (e.g. during an ANPR scan) or network stalls,
+        // recover immediately without getting permanently frozen!
+        const watchdog = setTimeout(() => {
+            if (!frameDone) {
+                frameDone = true;
+                tempImg.src = "";
+                camStreamTimers[c] = setTimeout(fetchNextFrame, 1000);
+            }
+        }, 3500);
+
+        tempImg.onload = function () {
+            if (frameDone) return;
+            frameDone = true;
+            clearTimeout(watchdog);
+
+            imgEl.src = tempImg.src;
+            imgEl.style.display = "block";
+            if (statusEl) statusEl.style.display = "none";
+
+            // Next frame in ~400ms for smooth, responsive live video (2.5 fps continuous)
+            camStreamTimers[c] = setTimeout(fetchNextFrame, 400);
+        };
+
+        tempImg.onerror = function () {
+            if (frameDone) return;
+            frameDone = true;
+            clearTimeout(watchdog);
+
+            if (!imgEl.src || imgEl.src === "" || imgEl.style.display === "none") {
+                if (statusEl) {
+                    statusEl.style.display = "block";
+                    statusEl.innerText = "RECONNECTING...";
                 }
             }
-        }
-    }, 25 * 1000); // 25 seconds
+            camStreamTimers[c] = setTimeout(fetchNextFrame, 1500);
+        };
+
+        tempImg.src = baseSnapshotUrl + "&t=" + Date.now();
+    }
+
+    fetchNextFrame();
 }
 
 let anprScannerTimer = null;
@@ -930,39 +936,14 @@ function scanCamerasForPlate(camsList, index) {
     const camData = camObj.data;
     const camNum = camObj.num;
 
-    // Grab frame directly from the active live camera feed on screen (Instant 0ms, no camera network contention)
-    let postBody = null;
-    let scanHeaders = {};
-    let scanUrl = "anpr_scan.php";
+    let camUser = (camData.user || "admin").trim();
+    if (camUser.toLowerCase() === "admin") camUser = "admin";
 
-    const imgEl = document.getElementById("cam_live_" + camNum);
-    if (imgEl && (imgEl.naturalWidth > 0 || imgEl.clientWidth > 0)) {
-        try {
-            const canvas = document.createElement("canvas");
-            canvas.width = imgEl.naturalWidth || imgEl.clientWidth || 704;
-            canvas.height = imgEl.naturalHeight || imgEl.clientHeight || 576;
-            const ctx = canvas.getContext("2d");
-            ctx.drawImage(imgEl, 0, 0, canvas.width, canvas.height);
-            const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
-            if (dataUrl && dataUrl.length > 500) {
-                postBody = JSON.stringify({ image: dataUrl });
-                scanHeaders = { "Content-Type": "application/json" };
-            }
-        } catch (cvErr) {
-            console.warn("Canvas capture note:", cvErr);
-        }
-    }
+    const scanUrl = "anpr_scan.php?url=" + encodeURIComponent(camData.url.trim()) + 
+                    "&user=" + encodeURIComponent(camUser) + 
+                    "&pass=" + encodeURIComponent(camData.pass || "");
 
-    const fetchOptions = postBody ? { method: "POST", headers: scanHeaders, body: postBody } : { method: "GET" };
-    if (!postBody) {
-        let camUser = (camData.user || "admin").trim();
-        if (camUser.toLowerCase() === "admin") camUser = "admin";
-        scanUrl = "anpr_scan.php?url=" + encodeURIComponent(camData.url.trim()) + 
-                  "&user=" + encodeURIComponent(camUser) + 
-                  "&pass=" + encodeURIComponent(camData.pass || "");
-    }
-
-    fetch(scanUrl, fetchOptions)
+    fetch(scanUrl)
         .then(res => res.json())
         .then(data => {
             if (data && data.status === "success" && data.plate) {
@@ -1008,11 +989,11 @@ function scanCamerasForPlate(camsList, index) {
 
 function stopLiveCameraStreaming() {
     stopAnprAutoScanner();
-    if (streamWatchdogTimer) {
-        clearInterval(streamWatchdogTimer);
-        streamWatchdogTimer = null;
-    }
     for (let c = 1; c <= 4; c++) {
+        if (camStreamTimers[c]) {
+            clearTimeout(camStreamTimers[c]);
+            delete camStreamTimers[c];
+        }
         const imgEl = document.getElementById("cam_live_" + c);
         if (imgEl) {
             imgEl.src = "";
