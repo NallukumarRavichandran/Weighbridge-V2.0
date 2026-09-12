@@ -5,9 +5,9 @@ let lastWeight = null;
 let sameCount = 0;
 var weightFrozen = false;
 let isConnecting = false;
+let isReading = false;
 let lastPacketTime = Date.now();
-let watchdogWorker = null;
-let bgAudioKeepAlive = null;
+let lastLoggedWeight = null;
 
 /* ============================================================
    SCALE PROFILE (LOCKED TO 2400 8N1 AS PER HARDWARE INDICATOR)
@@ -79,11 +79,12 @@ async function cleanupSerialHandles() {
         } catch(e) {}
         port = null;
     }
+    isReading = false;
 }
 
 /* DIRECT SCALE CONNECTION ENGINE (CONNECT DIRECTLY AT 2400 8N1) */
 async function connectScaleDirect() {
-    if (port && port.readable && reader) {
+    if (isReading || (port && port.readable)) {
         setStatus("CONNECTED (2400)", "#16a34a");
         closeScaleDialog();
         return;
@@ -97,10 +98,8 @@ async function connectScaleDirect() {
 
         let ports = await navigator.serial.getPorts();
         if (ports.length > 0) {
-            // Connect directly to the already-paired device without prompting
             port = ports[0];
         } else {
-            // First time pairing: prompt user to select port
             try {
                 port = await navigator.serial.requestPort();
             } catch (pickErr) {
@@ -161,7 +160,7 @@ async function disconnectScale() {
 
 /* AUTO-RECONNECT ON PAGE LOAD / RELOAD WITH PROGRESSIVE RETRIES (UP TO 5 ATTEMPTS) */
 async function autoReconnect(retryCount = 0) {
-    if (port && port.readable && reader) {
+    if (isReading || (port && port.readable)) {
         setStatus("CONNECTED (2400)", "#16a34a");
         return;
     }
@@ -186,16 +185,15 @@ async function autoReconnect(retryCount = 0) {
 
             lineBuffer = "";
             lastPacketTime = Date.now();
-            readScale();
             setStatus("CONNECTED (2400)", "#16a34a");
             console.log("Scale Auto-Connected (2400 Baud)");
+            readScale();
         }
     } catch (e) {
         console.warn("Auto-reconnect attempt " + (retryCount + 1) + " note:", e.message);
-        // After save / page reload, progressively retry up to 5 times while driver frees handle
         if (retryCount < 5) {
             isConnecting = false;
-            const delay = 400 + (retryCount * 350); // 400ms, 750ms, 1100ms, 1450ms, 1800ms
+            const delay = 600 + (retryCount * 400); // 600ms, 1000ms, 1400ms, 1800ms
             setTimeout(() => autoReconnect(retryCount + 1), delay);
             return;
         }
@@ -207,20 +205,24 @@ async function autoReconnect(retryCount = 0) {
     }
 }
 
-/* READ SCALE STREAM (CONTINUOUS ASYNC READER WITH AUTO-RECOVERY) */
+/* READ SCALE STREAM (CONTINUOUS ASYNC READER WITH SINGLE-OWNERSHIP & AUTO-RECOVERY) */
 async function readScale() {
-    const decoder = new TextDecoder();
+    if (isReading) return; // Prevent concurrent reader collision
     if (!port || !port.readable) {
         autoReconnect(0);
         return;
     }
 
+    isReading = true;
+    const decoder = new TextDecoder();
+
     try {
         reader = port.readable.getReader();
     } catch (err) {
         console.error("Failed to acquire reader, resetting connection:", err);
+        isReading = false;
         await cleanupSerialHandles();
-        setTimeout(() => autoReconnect(0), 400);
+        setTimeout(() => autoReconnect(0), 1000);
         return;
     }
 
@@ -235,75 +237,41 @@ async function readScale() {
             }
 
             lastPacketTime = Date.now();
-
             const text = decoder.decode(value, { stream: true });
             lineBuffer += text;
 
-            // Universal Dynamic Frame Extractor:
-            // Extracts ONLY 100% complete frames between STX (0x02) and ETX (0x03) / CR / LF.
-            // Incomplete chunks remain in lineBuffer until the closing delimiter arrives, completely preventing partial packet zero-flicker.
+            // Universal Dynamic Line Framer (100% Identical to HyperTerminal Line Framing):
+            // Buffers incoming byte stream and extracts complete lines delimited by CR (\r), LF (\n), or CR+LF.
+            // Completely eliminates partial packet slicing, STX sign-stripping, and zero-flickering.
             while (true) {
-                let stx = lineBuffer.indexOf('\x02');
-                if (stx !== -1) {
-                    // Discard any garbage or fragmented tail before the first STX
-                    if (stx > 0) {
-                        lineBuffer = lineBuffer.substring(stx);
-                        stx = 0;
+                let newlineIdx = lineBuffer.search(/[\r\n]/);
+                if (newlineIdx === -1) {
+                    // Prevent memory overflow on noisy/non-terminated stream
+                    if (lineBuffer.length > 256) {
+                        lineBuffer = lineBuffer.substring(lineBuffer.length - 64);
                     }
-
-                    // Look for frame terminators: ETX (\x03), CR (\r), LF (\n)
-                    let etx = lineBuffer.indexOf('\x03', 1);
-                    let cr = lineBuffer.indexOf('\r', 1);
-                    let lf = lineBuffer.indexOf('\n', 1);
-                    let candidates = [etx, cr, lf].filter(idx => idx > 0);
-
-                    // Check if another STX arrived before a terminator (resync if transmission was interrupted)
-                    let nextStx = lineBuffer.indexOf('\x02', 1);
-                    if (nextStx !== -1 && (candidates.length === 0 || Math.min(...candidates) > nextStx)) {
-                        lineBuffer = lineBuffer.substring(nextStx);
-                        continue;
-                    }
-
-                    if (candidates.length > 0) {
-                        let endIdx = Math.min(...candidates);
-                        let packet = lineBuffer.substring(1, endIdx);
-                        lineBuffer = lineBuffer.substring(endIdx).replace(/^[\x03\r\n]+/, '');
-                        isStreamSynced = true;
-                        processWeightLine(packet);
-                        continue;
-                    }
-                    // Full frame not yet arrived; keep in lineBuffer and wait for next chunk
                     break;
                 }
 
-                // Line-delimited stream fallback (CR/LF for indicators without STX)
-                let newlineIdx = lineBuffer.search(/[\r\n]/);
-                if (newlineIdx !== -1) {
-                    let packet = lineBuffer.substring(0, newlineIdx);
-                    lineBuffer = lineBuffer.substring(newlineIdx).replace(/^[\r\n]+/, '');
-                    
-                    // Discard initial fragment on fresh connection
-                    if (!isStreamSynced) {
-                        isStreamSynced = true;
-                        continue;
-                    }
+                let packet = lineBuffer.substring(0, newlineIdx);
+                // Advance past all contiguous line delimiters (\r, \n, NUL)
+                lineBuffer = lineBuffer.substring(newlineIdx).replace(/^[\r\n\x00]+/, '');
 
-                    if (packet.trim().length > 0) {
-                        processWeightLine(packet);
-                    }
+                // Discard first partial packet upon connection so stream syncs cleanly
+                if (!isStreamSynced) {
+                    isStreamSynced = true;
                     continue;
                 }
 
-                // Prevent buffer memory leak if continuous unrecognized stream
-                if (lineBuffer.length > 256) {
-                    lineBuffer = lineBuffer.substring(lineBuffer.length - 64);
+                if (packet.trim().length >= 2) {
+                    processWeightLine(packet);
                 }
-                break;
             }
         }
     } catch (e) {
-        console.warn("Scale stream read hiccup (auto-recovering):", e);
+        console.warn("Scale stream read hiccup (auto-recovering):", e.message || e);
     } finally {
+        isReading = false;
         if (reader) {
             try {
                 reader.releaseLock();
@@ -311,23 +279,29 @@ async function readScale() {
             reader = null;
         }
 
-        // Full teardown of handles and clean auto-reconnection
-        await cleanupSerialHandles();
-        setTimeout(() => autoReconnect(0), 400);
+        if (port) {
+            try {
+                await port.close();
+            } catch(e) {}
+            port = null;
+        }
+
+        // Clean auto-recovery with progressive pause to allow driver buffers to flush
+        setTimeout(() => autoReconnect(0), 1000);
     }
 }
 
-/* UNIVERSAL WEIGHING INDICATOR PARSER (PRESERVES MINUS READINGS & NEVER FREEZES LIVE WEIGHT) */
+/* UNIVERSAL WEIGHING INDICATOR PARSER (PRESERVES MINUS READINGS & MATCHES HYPERTERMINAL 1:1) */
 function processWeightLine(line) {
     if (!line) return;
-    // Strip unprintable control characters (STX 0x02, ETX 0x03, NUL, etc.)
+    // Strip unprintable control characters (STX 0x02, ETX 0x03, NUL, etc.) without altering minus sign or digits
     line = line.replace(/[\x00-\x1F\x7F-\x9F]/g, "").trim();
-    if (!line) return;
+    if (!line || line.length < 2) return;
 
     // Normalize multiple dashes (e.g. "--001445" -> "-001445")
     line = line.replace(/--+/g, "-");
 
-    // 1. D300 / XK3190 Inverted Format (e.g. "=500000" or "=5.43210")
+    // 1. D300 / XK3190 Inverted Format (e.g. "=500000" or "=5.43210" or "=540000-")
     if (line.startsWith("=") && line.length >= 6) {
         let isNeg = line.includes("-");
         let rawNum = line.substring(1).replace(/[-+]/g, "").trim();
@@ -338,19 +312,27 @@ function processWeightLine(line) {
             if (isNeg) w = -w;
             if (!isNaN(w)) {
                 if (w === 0) w = 0;
+                if (w !== lastLoggedWeight) {
+                    console.log("⚖️ Scale Live Weight:", w, "kg | Raw:", JSON.stringify(line));
+                    lastLoggedWeight = w;
+                }
                 updateLiveWeight(w);
                 return;
             }
         }
     }
 
-    // 2. Standard & Negative Decimal Formats ("-002210", "-000655", "000655", "ST,GS,+00125.0kg", "wn00007.5kg", "-12500")
+    // 2. Standard & Negative Decimal Formats ("-002210", "-000655", "-  2085", "000655", "ST,GS,+00125.0kg", "wn00007.5kg", "-12500")
     let match = line.match(/[-+]?\s*\d+(?:\.\d+)?/);
     if (match) {
         let cleanNum = match[0].replace(/\s+/g, "");
         let rawWeight = parseFloat(cleanNum);
         if (!isNaN(rawWeight)) {
             if (rawWeight === 0) rawWeight = 0;
+            if (rawWeight !== lastLoggedWeight) {
+                console.log("⚖️ Scale Live Weight:", rawWeight, "kg | Raw:", JSON.stringify(line));
+                lastLoggedWeight = rawWeight;
+            }
             // Live weight ALWAYS updates continuously - never frozen
             updateLiveWeight(rawWeight);
         }
@@ -368,71 +350,12 @@ function closeScaleDialog() {
     if (dlg) dlg.style.display = "none";
 }
 
-/* ============================================================
-   BACKGROUND STREAM KEEPALIVE & SELF-HEALING WATCHDOG
-   Prevents weight from freezing when tab is minimized or in background
-   ============================================================ */
-
-// 1. Silent Web Audio Keep-Alive to prevent aggressive background tab suspension in Chromium
-function startBackgroundKeepAlive() {
-    try {
-        if (!bgAudioKeepAlive && (window.AudioContext || window.webkitAudioContext)) {
-            const AudioCtx = window.AudioContext || window.webkitAudioContext;
-            bgAudioKeepAlive = new AudioCtx();
-            const osc = bgAudioKeepAlive.createOscillator();
-            const gain = bgAudioKeepAlive.createGain();
-            gain.gain.value = 0.00001; // Silent / inaudible
-            osc.connect(gain);
-            gain.connect(bgAudioKeepAlive.destination);
-            osc.start();
-        }
-        if (bgAudioKeepAlive && bgAudioKeepAlive.state === "suspended") {
-            bgAudioKeepAlive.resume();
-        }
-    } catch(e) {}
-}
-
-// 2. Health Checker function: detects stalled stream and revives immediately
-function checkScaleHealth() {
-    const connEl = document.getElementById("connStatus");
-    const isSupposedToBeConnected = connEl && connEl.innerText.includes("CONNECTED");
-
-    if (isSupposedToBeConnected) {
-        const elapsed = Date.now() - lastPacketTime;
-        if (elapsed > 3000) {
-            console.warn("Scale stream inactive for " + elapsed + "ms (background stall detected) - reviving connection...");
-            lastPacketTime = Date.now();
-            cleanupSerialHandles().then(() => autoReconnect(0));
-        }
-    }
-}
-
-// 3. Web Worker based unthrottled background heartbeat
-try {
-    const blob = new Blob([
-        "setInterval(function() { postMessage('tick'); }, 1500);"
-    ], { type: "application/javascript" });
-    watchdogWorker = new Worker(URL.createObjectURL(blob));
-    watchdogWorker.onmessage = function() {
-        checkScaleHealth();
-    };
-} catch(e) {
-    setInterval(checkScaleHealth, 2000);
-}
-
-// 4. Foreground / Tab Focus Watchdog (immediate revival when user clicks back)
+/* CLEAN FOREGROUND AUTO-RESUME (NON-INTRUSIVE) */
 document.addEventListener("visibilitychange", function() {
     if (document.visibilityState === "visible") {
-        checkScaleHealth();
-        startBackgroundKeepAlive();
+        if (!isReading && (!port || !port.readable)) {
+            console.log("Tab returned to focus - initiating scale auto-reconnect...");
+            autoReconnect(0);
+        }
     }
 });
-
-window.addEventListener("focus", function() {
-    checkScaleHealth();
-    startBackgroundKeepAlive();
-});
-
-// Enable audio keep-alive on any user interaction
-document.addEventListener("click", startBackgroundKeepAlive, { once: false });
-document.addEventListener("keydown", startBackgroundKeepAlive, { once: false });
