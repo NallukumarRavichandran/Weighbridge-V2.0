@@ -244,7 +244,7 @@ async function readScale() {
             // Buffers incoming byte stream and extracts complete lines delimited by CR (\r), LF (\n), or CR+LF.
             // Completely eliminates partial packet slicing, STX sign-stripping, and zero-flickering.
             while (true) {
-                let newlineIdx = lineBuffer.search(/[\r\n]/);
+                let newlineIdx = lineBuffer.search(/[\r\n\x03]/);
                 if (newlineIdx === -1) {
                     // Prevent memory overflow on noisy/non-terminated stream
                     if (lineBuffer.length > 256) {
@@ -254,8 +254,8 @@ async function readScale() {
                 }
 
                 let packet = lineBuffer.substring(0, newlineIdx);
-                // Advance past all contiguous line delimiters (\r, \n, NUL)
-                lineBuffer = lineBuffer.substring(newlineIdx).replace(/^[\r\n\x00]+/, '');
+                // Advance past all contiguous line delimiters (\r, \n, ETX \x03, STX \x02, NUL \x00)
+                lineBuffer = lineBuffer.substring(newlineIdx).replace(/^[\r\n\x00\x02\x03]+/, '');
 
                 // Discard first partial packet upon connection so stream syncs cleanly
                 if (!isStreamSynced) {
@@ -350,7 +350,7 @@ function closeScaleDialog() {
     if (dlg) dlg.style.display = "none";
 }
 
-/* CLEAN FOREGROUND AUTO-RESUME (NON-INTRUSIVE) */
+/* CLEAN FOREGROUND AUTO-RESUME & STARTUP HOOKS */
 document.addEventListener("visibilitychange", function() {
     if (document.visibilityState === "visible") {
         if (!isReading && (!port || !port.readable)) {
@@ -359,3 +359,29 @@ document.addEventListener("visibilitychange", function() {
         }
     }
 });
+
+// Auto-connect scale immediately on page load/reload
+if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", () => {
+        autoReconnect(0);
+    });
+} else {
+    autoReconnect(0);
+}
+
+window.addEventListener("load", () => {
+    if (!isReading && (!port || !port.readable)) {
+        autoReconnect(0);
+    }
+});
+
+// 🛡️ CONTINUOUS SERIAL HEALTH WATCHDOG:
+// If connected but no packets arrive for > 4 seconds (e.g. driver stall or USB glitch), auto-recover seamlessly!
+setInterval(() => {
+    if (isReading && port && port.readable) {
+        if (Date.now() - lastPacketTime > 4000) {
+            console.warn("⚠️ Scale packet stream paused (>4s). Auto-recovering connection...");
+            cleanupSerialHandles().then(() => autoReconnect(0));
+        }
+    }
+}, 3500);
