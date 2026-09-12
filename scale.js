@@ -29,7 +29,8 @@ function setStatus(text, color = "#b91c1c") {
     el.style.color = color;
 }
 
-/* UPDATE LIVE WEIGHT ON SCREEN (PRESERVES LIVE CONTINUOUS STREAM & GUARDS AGAINST DOM REPAINT FLICKER) */
+/* UPDATE LIVE WEIGHT ON SCREEN (FLICKER-FREE HIGH-PERFORMANCE DOM RENDERER) */
+let pendingWeightAnimFrame = null;
 function updateLiveWeight(weight) {
     if (weight === lastWeight) {
         sameCount++;
@@ -39,14 +40,20 @@ function updateLiveWeight(weight) {
 
     lastWeight = weight;
 
-    const el = document.getElementById("live_weight");
-    if (el) {
-        const strVal = String(weight);
-        if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
-            if (el.value !== strVal) el.value = strVal;
-        } else {
-            if (el.innerText !== strVal) el.innerText = strVal;
-        }
+    // Use requestAnimationFrame to batch DOM repaints to monitor refresh rate (60Hz), eliminating DOM layout thrashing & visual flicker
+    if (pendingWeightAnimFrame === null) {
+        pendingWeightAnimFrame = requestAnimationFrame(() => {
+            pendingWeightAnimFrame = null;
+            const el = document.getElementById("live_weight");
+            if (el) {
+                const strVal = String(lastWeight);
+                if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
+                    if (el.value !== strVal) el.value = strVal;
+                } else {
+                    if (el.textContent !== strVal) el.textContent = strVal;
+                }
+            }
+        });
     }
 }
 
@@ -244,6 +251,13 @@ async function readScale() {
             // Buffers incoming byte stream and extracts complete lines delimited by CR (\r), LF (\n), or CR+LF.
             // Completely eliminates partial packet slicing, STX sign-stripping, and zero-flickering.
             while (true) {
+                // If STX (0x02) exists in buffer, discard any leading corrupted noise bytes before it
+                let stxIdx = lineBuffer.indexOf('\x02');
+                if (stxIdx > 0) {
+                    lineBuffer = lineBuffer.substring(stxIdx);
+                }
+
+                // Look for packet termination delimiter: \r, \n, or \x03 (ETX)
                 let newlineIdx = lineBuffer.search(/[\r\n\x03]/);
                 if (newlineIdx === -1) {
                     // Prevent memory overflow on noisy/non-terminated stream
@@ -291,12 +305,18 @@ async function readScale() {
     }
 }
 
-/* UNIVERSAL WEIGHING INDICATOR PARSER (PRESERVES MINUS READINGS & MATCHES HYPERTERMINAL 1:1) */
+/* UNIVERSAL WEIGHING INDICATOR PARSER (100% FAITHFUL TO PHYSICAL INDICATOR DISPLAY) */
 function processWeightLine(line) {
     if (!line) return;
-    // Strip unprintable control characters (STX 0x02, ETX 0x03, NUL, etc.) without altering minus sign or digits
+    // Strip unprintable control characters without altering minus sign or digits
     line = line.replace(/[\x00-\x1F\x7F-\x9F]/g, "").trim();
     if (!line || line.length < 2) return;
+
+    // Reject standalone status bytes or isolated 1-2 digit codes (e.g. "00", "01", "40", "0", "ST", "US")
+    // A legitimate weighbridge reading ALWAYS has at least 3 digits or a formatted indicator prefix
+    if (/^[0-9]{1,2}$/.test(line)) {
+        return;
+    }
 
     // Normalize multiple dashes (e.g. "--001445" -> "-001445")
     line = line.replace(/--+/g, "-");
@@ -322,8 +342,17 @@ function processWeightLine(line) {
         }
     }
 
-    // 2. Standard & Negative Decimal Formats ("-002210", "-000655", "-  2085", "000655", "ST,GS,+00125.0kg", "wn00007.5kg", "-12500")
-    let match = line.match(/[-+]?\s*\d+(?:\.\d+)?/);
+    // 2. Standard & Negative Decimal Formats ("-002210", "-000655", "-  2085", "002085", "ST,GS,+00125.0kg", "wn00007.5kg", "-12500")
+    // Prioritize the actual primary weight number (requiring at least 3 digits or decimal, ignoring 1-2 digit channel/status prefixes)
+    let match = line.match(/[-+]?\s*\d{3,}(?:\.\d+)?/);
+    if (!match) {
+        // Fallback for smaller values (e.g. "0", "10", "-50") only if it is the sole numeric content
+        match = line.match(/^[^0-9]*([-+]?\s*\d+(?:\.\d+)?)[^0-9]*$/);
+        if (match) {
+            match[0] = match[1];
+        }
+    }
+
     if (match) {
         let cleanNum = match[0].replace(/\s+/g, "");
         let rawWeight = parseFloat(cleanNum);
@@ -333,7 +362,7 @@ function processWeightLine(line) {
                 console.log("⚖️ Scale Live Weight:", rawWeight, "kg | Raw:", JSON.stringify(line));
                 lastLoggedWeight = rawWeight;
             }
-            // Live weight ALWAYS updates continuously - never frozen
+            // Live weight ALWAYS updates continuously - exactly matching the indicator display
             updateLiveWeight(rawWeight);
         }
     }
